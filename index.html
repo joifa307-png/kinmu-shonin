@@ -1,8 +1,190 @@
 <!DOCTYPE html>
 <html lang="ja">
-<head><meta charset="UTF-8"><title>有給承認</title></head>
-<body style="font-family:sans-serif;padding:20px;background:#eae5e3;">
-<h2>有給承認アプリ（準備中）</h2>
-<p>このページは準備中です。</p>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>有給承認</title>
+<script charset="utf-8" src="https://static.worksmobile.net/static/wm/woff/edge/3.7.1/sdk.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent;
+      font-family:"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif; }
+  body { background:#eae5e3; color:#37322f; padding:16px; max-width:480px; margin:0 auto; }
+  .header { background:#0f6e56; color:#eae5e3; border-radius:12px; padding:14px 16px; margin-bottom:10px; }
+  .header .title { font-size:17px; font-weight:600; }
+  .header .sub { font-size:12px; color:#9fe1cb; margin-top:3px; }
+  .lead { font-size:12px; color:#615a55; margin:10px 4px 14px; }
+  .card { background:#FCFBFA; border:0.5px solid rgba(90,80,75,.18); border-radius:12px;
+          padding:14px 16px; margin-bottom:12px; }
+  .row1 { display:flex; justify-content:space-between; align-items:baseline; }
+  .nm { font-size:16px; font-weight:600; color:#2a2522; }
+  .fac { font-size:12px; color:#a39a92; }
+  .dateline { display:flex; align-items:center; gap:8px; margin:11px 0 4px; }
+  .badge { background:#185fa5; color:#fff; font-size:11px; border-radius:6px; padding:2px 9px; }
+  .dt { font-size:16px; font-weight:600; color:#37322f; }
+  .applied { font-size:11px; color:#a39a92; margin-bottom:13px; }
+  .btn-approve { width:100%; background:#0f6e56; color:#fff; border:none; border-radius:8px;
+                 padding:13px; font-size:16px; font-weight:600; cursor:pointer; }
+  .btn-approve:active { transform:scale(0.99); }
+  .btn-approve:disabled { opacity:.5; }
+  .empty, .msg { text-align:center; font-size:14px; color:#857c74; padding:28px 16px;
+                 background:#FCFBFA; border:0.5px solid rgba(90,80,75,.15); border-radius:12px; }
+  .err { color:#a32d2d; }
+  .retry { margin-top:14px; background:#0f6e56; color:#fff; border:none; border-radius:8px;
+           padding:11px 22px; font-size:14px; font-weight:600; cursor:pointer; }
+  .toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%);
+           background:#2a2522; color:#FCFBFA; padding:11px 20px; border-radius:8px; font-size:14px;
+           opacity:0; transition:opacity .25s; pointer-events:none; max-width:90%; text-align:center; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="title">有給承認</div>
+  <div class="sub" id="subLabel">読み込み中…</div>
+</div>
+<div class="lead" id="lead"></div>
+<div id="list"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const WOFF_ID = 'ZxghMBKMmHET8UNXlcVD_A';
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbx24znbj2ThSj41D8mFX9adq70lyhyWAanJbZ6jGS3deDbgT2JRCy_fC9c65yAMgEg/exec';
+
+let me = null;          // 自分（承認者）のstaff情報
+let pendingList = [];   // 自分宛ての申請
+
+const $ = id => document.getElementById(id);
+
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2600);
+}
+
+function fmtDateJp(ymd){
+  const m = String(ymd).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(!m) return ymd;
+  const dt = new Date(+m[1], +m[2]-1, +m[3]);
+  const w = ['日','月','火','水','木','金','土'][dt.getDay()];
+  return `${+m[2]}/${+m[3]}（${w}）`;
+}
+function fmtApplied(iso){
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if(!m) return '';
+  return `申請日時：${+m[2]}/${+m[3]} ${m[4]}:${m[5]}`;
+}
+
+/* ===== WOFF 本人特定 ===== */
+async function getProfile(){
+  try {
+    return await woff.getProfile();
+  } catch(e){
+    if (typeof woff.login === 'function'){ await woff.login(); return await woff.getProfile(); }
+    throw e;
+  }
+}
+
+/* ===== GAS：自分のstaff情報 ===== */
+async function fetchStaffOne(staffId){
+  const url = `${GAS_URL}?type=staffOne&staffId=${encodeURIComponent(staffId)}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if(!data.ok) throw new Error(data.error || 'staff取得失敗');
+  return data.staff;
+}
+
+/* ===== GAS：自分宛ての申請中一覧 ===== */
+async function fetchPending(approverId){
+  const url = `${GAS_URL}?type=pendingForApprover&approverId=${encodeURIComponent(approverId)}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if(!data.ok) throw new Error(data.error || '申請取得失敗');
+  return data.records || [];
+}
+
+/* ===== GAS：承認 ===== */
+async function postApprove(date, staffId){
+  const res = await fetch(GAS_URL, {
+    method:'POST',
+    headers:{ 'Content-Type':'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action:'approve', date, staffId, approvedBy: me.staffId })
+  });
+  const data = await res.json();
+  if(!data.ok) throw new Error(data.error || '承認失敗');
+  return data.record;
+}
+
+/* ===== 描画 ===== */
+function render(){
+  const list = $('list');
+  $('subLabel').textContent = `${me.name} さん／承認待ち ${pendingList.length}件`;
+  if(pendingList.length === 0){
+    $('lead').textContent = '';
+    list.innerHTML = '<div class="empty">承認待ちの申請はありません。</div>';
+    return;
+  }
+  $('lead').textContent = 'あなた宛ての申請です。内容を確認して承認してください。';
+  list.innerHTML = '';
+  pendingList.forEach((rec, i) => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="row1">
+        <div class="nm">${rec.name || rec.staffId}</div>
+        <div class="fac">${facilityLabel(rec.facilityId)}</div>
+      </div>
+      <div class="dateline"><span class="badge">有給</span><span class="dt">${fmtDateJp(rec.date)}</span></div>
+      <div class="applied">${fmtApplied(rec.createdAt)}</div>
+      <button class="btn-approve" data-i="${i}">承認する</button>`;
+    list.appendChild(card);
+  });
+  list.querySelectorAll('.btn-approve').forEach(btn => {
+    btn.addEventListener('click', () => onApprove(+btn.dataset.i, btn));
+  });
+}
+
+function facilityLabel(f){
+  return ({nishi:'おひさま西', minami:'南のおひさま', hibari:'ひばり', link:'リンク'})[f] || f || '';
+}
+
+async function onApprove(i, btn){
+  const rec = pendingList[i];
+  if(!confirm(`${rec.name||rec.staffId} さんの有給（${fmtDateJp(rec.date)}）を承認しますか？`)) return;
+  btn.disabled = true; btn.textContent = '承認中…';
+  try {
+    await postApprove(rec.date, rec.staffId);
+    pendingList.splice(i, 1);   // 一覧から消す
+    render();
+    toast('承認しました');
+  } catch(e){
+    btn.disabled = false; btn.textContent = '承認する';
+    toast('承認できませんでした。通信を確認してください。');
+  }
+}
+
+/* ===== 起動 ===== */
+async function start(){
+  try {
+    if(typeof woff === 'undefined') throw new Error('WOFF SDK 未読込');
+    await woff.init({ woffId: WOFF_ID });
+    const prof = await getProfile();
+    const userId = prof.userId;
+    me = await fetchStaffOne(userId);
+    if(!me || !me.staffId){
+      $('subLabel').textContent = '未登録のユーザーです';
+      $('list').innerHTML = `<div class="msg">このアカウントはスタッフ登録されていません。<br>本部にお問い合わせください。<br><br>あなたのID：<br>${userId}</div>`;
+      return;
+    }
+    pendingList = await fetchPending(me.staffId);
+    render();
+  } catch(e){
+    $('subLabel').textContent = '読み込みエラー';
+    $('list').innerHTML = `<div class="msg err">読み込みに失敗しました。<br>LINE WORKS内で開いているか、通信環境を確認してください。<button class="retry" onclick="location.reload()">再読込</button></div>`;
+    console.error(e);
+  }
+}
+
+start();
+</script>
 </body>
 </html>
