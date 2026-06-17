@@ -173,6 +173,12 @@ async function start(){
       $('list').innerHTML = `<div class="msg">このアカウントはスタッフ登録されていません。<br>本部にお問い合わせください。<br><br>あなたのID：<br>${userId}</div>`;
       return;
     }
+    // 管理者(admin)以外は利用不可
+    if(String(me.role) !== 'admin'){
+      $('subLabel').textContent = '';
+      $('list').innerHTML = '<div class="empty">無効：管理者専用です</div>';
+      return;
+    }
     pendingList = await fetchPending(me.staffId);
     render();
   } catch(e){
